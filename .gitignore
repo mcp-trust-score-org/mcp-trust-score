@@ -1,0 +1,7 @@
+
+# Grille AXIOM confidentielle et documents clients : ne jamais committer
+leaderboard/methodology/axiom_v1_*.json
+!leaderboard/methodology/axiom_public_v1_*.json
+*.xlsx
+leaderboard/data_room/*/documents/draft_audit_result.json
+__pycache__/

@@ -1,8 +1,9 @@
-# Data Room — AI-assisted organizational audit
+# Data Room — AI-assisted audit draft (local model)
 
 Drop company documents here (AI policies, charters, RSE/sustainability
-reports, governance meeting notes, etc.) to have Claude propose a DRAFT
-score for each of the 11 organizational audit questions.
+reports, governance meeting notes, etc.) to have a **local** model (Ollama)
+propose a DRAFT level for each sub-domain of the AXIOM v1.1 grid.
+Nothing leaves your machine. Do not commit real client documents.
 
 ## Structure
 
@@ -20,9 +21,10 @@ Supported formats: `.txt`, `.md`, `.pdf`.
 ## Usage
 
 ```bash
-pip install anthropic pypdf
-export ANTHROPIC_API_KEY="your-key"
-python3 ai_audit_assist.py data_room/<company-name>/documents
+pip install requests pypdf
+ollama pull mistral-small                       # any local model
+export AXIOM_METHODOLOGY_FILE=/path/to/axiom_v1_1.json   # confidential grid
+python3 ai_audit_assist.py data_room/<company-name>/documents --model mistral-small
 ```
 
 This produces `draft_audit_result.json` in that folder — a **draft**,
@@ -35,12 +37,9 @@ not a final audit.
 - Any question not covered by the documents gets `confidence:
   "aucune_preuve"` (no evidence) and a score of 0 by default.
 - **A human must review every proposed score** before entering it into
-  the official audit form (`org_audit_form.py`). This tool accelerates
+  the official audit form (`/audit`, AXIOM v1.1 grid). This tool accelerates
   document review — it does not replace the auditor's judgment.
-- Untested in this dev environment: the real Claude API call itself
-  (no API key available here). Document loading, PDF parsing, and
-  prompt construction were verified — the API call logic follows the
-  same pattern already validated in other parts of this project.
+- Tested with a simulated Ollama server; not yet run against a real local model.
 
 ## Example
 

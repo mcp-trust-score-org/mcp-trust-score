@@ -180,7 +180,7 @@ RADAR_DOMAIN_ORDER = [
 ]
 
 
-def generate_radar_svg(domain_percentages: dict, size: int = 420) -> str:
+def generate_radar_svg(domain_percentages: dict, size: int = 420, order: list | None = None) -> str:
     """Génère un graphique radar en SVG pur — pas de librairie JS externe,
     donc pas de dépendance réseau côté navigateur, robuste et autonome.
 
@@ -188,9 +188,10 @@ def generate_radar_svg(domain_percentages: dict, size: int = 420) -> str:
     hexagone parfait au rayon max, cas 0% partout = point central)."""
     import math
 
+    order = order or RADAR_DOMAIN_ORDER
     cx, cy = size / 2, size / 2
     max_r = size * 0.35
-    n = len(RADAR_DOMAIN_ORDER)
+    n = len(order)
 
     def point_for(index: int, percentage: float) -> tuple:
         angle = math.radians(-90 + index * (360 / n))
@@ -221,13 +222,13 @@ def generate_radar_svg(domain_percentages: dict, size: int = 420) -> str:
     # Polygone des scores réels
     score_points = [
         point_for(i, domain_percentages.get(domain, 0))
-        for i, domain in enumerate(RADAR_DOMAIN_ORDER)
+        for i, domain in enumerate(order)
     ]
     score_pts_str = " ".join(f"{x:.1f},{y:.1f}" for x, y in score_points)
 
     # Labels courts (juste le nom du domaine, sans le numéro/préfixe long)
     labels_svg = ""
-    for i, domain in enumerate(RADAR_DOMAIN_ORDER):
+    for i, domain in enumerate(order):
         lx, ly = label_pos(i)
         short_label = domain.split(". ", 1)[-1] if ". " in domain else domain
         anchor = "middle"
@@ -240,7 +241,8 @@ def generate_radar_svg(domain_percentages: dict, size: int = 420) -> str:
             f'text-anchor="{anchor}" dominant-baseline="middle">{short_label}</text>\n'
         )
 
-    return f"""<svg viewBox="0 0 {size} {size}" xmlns="http://www.w3.org/2000/svg">
+    pad = size * 0.3  # marge pour que les libellés longs ne soient pas coupés
+    return f"""<svg viewBox="{-pad:.0f} 0 {size + 2 * pad:.0f} {size}" style="width:100%;height:auto" xmlns="http://www.w3.org/2000/svg">
 {grid_svg}
 {axes_svg}
 <polygon points="{score_pts_str}" fill="#3b82f6" fill-opacity="0.25" stroke="#2563eb" stroke-width="2"/>

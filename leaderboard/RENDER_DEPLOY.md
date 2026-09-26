@@ -73,6 +73,7 @@ répondent 503 au lieu d'accepter n'importe qui.
 |---|---|
 | `AUDITOR_TOKENS` | `alice:<jeton>,bob:<jeton>` — seuls ces auditeurs peuvent soumettre un audit (`/submit-audit`). Jetons de 24 caractères minimum, ex. `python -c "import secrets; print(secrets.token_urlsafe(32))"`. Le nom de l'auditeur est enregistré avec l'audit. |
 | `ADMIN_TOKEN` | protège `/badge/anchor`, `/framework-check`, `/test-email` (en-tête `Authorization: Bearer <jeton>`). 24 caractères minimum. |
+| `AXIOM_METHODOLOGY_FILE` | chemin de la grille AXIOM confidentielle (Render → Secret Files, ex. `/etc/secrets/axiom_v1_1.json`). Sans elle, l'audit est désactivé. |
 | `OIDC_AUDIENCE` | audience attendue dans le jeton OIDC GitHub (défaut `mcp-trust-score`). |
 
 `/submit` vérifie la signature du jeton OIDC avec les clés publiques de

@@ -13,9 +13,12 @@ manque, la route refuse au lieu d'accepter.
    honnêtement (le workflow du dépôt peut être modifié). Pour les paliers
    payants, la mesure doit être faite par notre propre infrastructure.
 
-2. Audits organisationnels (/submit-audit) — jetons auditeurs.
+2. Audits organisationnels (/audit, /submit-audit) — jetons évaluateurs.
    Variable AUDITOR_TOKENS = "alice:<jeton>,bob:<jeton>". Chaque audit
-   enregistre l'auditeur qui l'a soumis.
+   enregistre l'évaluateur qui l'a soumis. Le formulaire (qui affiche la
+   grille confidentielle) demande les identifiants via le navigateur
+   (authentification HTTP Basic : identifiant = nom, mot de passe = jeton) ;
+   l'API accepte aussi « Authorization: Bearer <jeton> ».
 
 3. Actions d'administration (ancrage, vérification des référentiels,
    email de test) — jeton ADMIN_TOKEN.
@@ -23,13 +26,14 @@ manque, la route refuse au lieu d'accepter.
 
 from __future__ import annotations
 
+import base64
 import hmac
 import os
 import re
 import secrets
 from functools import wraps
 
-from flask import g, jsonify, request
+from flask import Response, g, jsonify, request
 
 GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 GITHUB_JWKS_URL = f"{GITHUB_OIDC_ISSUER}/.well-known/jwks"
@@ -116,6 +120,19 @@ def _parse_auditor_tokens() -> dict[str, str]:
     return tokens
 
 
+def _auditor_from_request(tokens: dict[str, str]) -> str | None:
+    """Bearer <jeton>, ou Basic <nom:jeton> (le nom doit correspondre au jeton)."""
+    header = request.headers.get("Authorization", "")
+    if header.lower().startswith("basic "):
+        try:
+            user, _, pwd = base64.b64decode(header[6:].strip()).decode("utf-8").partition(":")
+        except Exception:  # noqa: BLE001
+            return None
+        label = _match(pwd, tokens)
+        return label if label and (not user or hmac.compare_digest(user.encode(), label.encode())) else None
+    return _match(_bearer(), tokens)
+
+
 def _match(presented: str | None, candidates: dict[str, str]) -> str | None:
     if not presented:
         return None
@@ -148,9 +165,27 @@ def require_auditor(view):
         tokens = _parse_auditor_tokens()
         if not tokens:
             return jsonify({"error": "Soumission d'audit désactivée : aucun auditeur configuré (AUDITOR_TOKENS)."}), 503
-        label = _match(_bearer(), tokens)
+        label = _auditor_from_request(tokens)
         if not label:
             return jsonify({"error": "Jeton auditeur invalide ou manquant."}), 401
+        g.auditor = label
+        return view(*args, **kwargs)
+    return wrapper
+
+
+def require_auditor_page(view):
+    """Pages réservées aux évaluateurs : le navigateur affiche une demande d'identifiants."""
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        tokens = _parse_auditor_tokens()
+        if not tokens:
+            return Response("Audit désactivé : aucun évaluateur configuré (AUDITOR_TOKENS).", 503,
+                            {"Content-Type": "text/plain; charset=utf-8"})
+        label = _auditor_from_request(tokens)
+        if not label:
+            return Response("Accès réservé aux évaluateurs.", 401,
+                            {"WWW-Authenticate": 'Basic realm="Evaluateurs AXIOM", charset="UTF-8"',
+                             "Content-Type": "text/plain; charset=utf-8"})
         g.auditor = label
         return view(*args, **kwargs)
     return wrapper

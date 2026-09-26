@@ -115,8 +115,9 @@ def test_legacy_unverified_rows_are_hidden_and_do_not_count(app_env):
 # --- audits ------------------------------------------------------------------
 
 def _audit_payload(server, repo=""):
-    n = len(server.AUDIT_QUESTIONNAIRE)
-    return {"company_name": "Acme", "linked_repo_url": repo, "scores": [4] * n, "evidences": ["charte IA"] * n}
+    subs = server.axiom.load_methodology()["sub_domains"]
+    entries = [{"id": sd["id"], "level": 4, "evidence": "Mesure technique", "justification": "charte IA"} for sd in subs]
+    return {"company_name": "Acme", "linked_repo_url": repo, "entries": entries}
 
 
 def test_audit_requires_auditor_token(app_env):

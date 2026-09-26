@@ -214,52 +214,49 @@ correctly stay at EMMA tier; only submissions genuinely spread across
 Governance, Accountability, etc.) would require a human-led audit
 process, not yet built — see project notes for design discussion.
 
-## Organizational audit (Gold / Platinum tiers)
+## Organizational audit (Gold / Platinum tiers) — AXIOM v1.1
 
-For the *organization publishing an agent* (not the agent itself), a
-human-led audit interface (`leaderboard/org_audit_form.py`) covers
-AXIOM's organizational domains (Strategy & Vision, Governance, Vendor
-Dependency, Financial Impact, Sustainability, AI Empowerment) — 11
-questions, scored 0-4 by a human auditor.
+The audit applies the **AXIOM v1.1** method: 9 domains, 27 sub-domains (including
+"Agents & outils"), levels 0–4 with half-levels.
 
-- **Gold**: organizational audit average ≥ 75%
-- **Platinum**: Gold criteria AND at least one linked repo currently
-  holding the technical **Silver** tier — proves organizational maturity
-  is backed by real technical track record, not just stated intent
+**Public part** (in this repo, `leaderboard/methodology/axiom_public_v1_1.json`, and on
+the `/methodologie` page): domains and sub-domain titles, scale, evidence types and
+their caps, scoring formula, tier criteria.
+**Confidential part** (NOT in this repo): level descriptions, evidence rules, weights,
+framework mappings. The server reads it from the file named by `AXIOM_METHODOLOGY_FILE`
+(on Render: a Secret File). Without it, the audit is disabled; the public page still works.
+Tests use a fictitious grid (`leaderboard/tests/fixtures/axiom_test_grid.json`).
 
-✅ **Tested end to end**: form renders correctly (6 domain groupings,
-11 questions), submission validates score count and range, tier
-computation verified for both Gold (high scores) and rejection (low
-scores) cases.
+- Each sub-domain gets a proposed level, the **type of evidence** obtained and a
+  justification. The retained level is capped by the evidence (public source or
+  interview: N2, document: N3, verified by the assessor or technical measurement: N4).
+- Sub-domains 9.3, 9.4, 9.6 cannot go above N2 without a **technical measurement**.
+- Score = Σ(retained level × weight) ÷ Σ(4 × weight) over evaluated sub-domains,
+  always published with its weighted **coverage**.
+- **Gold**: score ≥ 75% with coverage ≥ 80%. **Platinum**: Gold + a linked repo holding
+  the technical **Silver** tier.
+- The form (`/audit`) shows the confidential grid, so it is reserved to assessors
+  (browser login: name + token from `AUDITOR_TOKENS`). Reports show the assessor, the
+  methodology version, retained levels and capped levels — not the grid itself.
 
-⚠️ This audit is intentionally NOT automated — these 11 questions
-require human judgment (interview, documentary evidence), unlike the
-technical EMMA/Silver tiers which are fully automated from a protocol
-connection.
+Audits recorded with the previous 11-question questionnaire are still readable.
 
-To run locally: `python3 leaderboard/org_audit_form.py` (port 5002).
-Requires hosting for real-world use, same considerations as the main
-leaderboard API.
+## AI-assisted audit draft (local model only)
 
-## AI-assisted audit (data room)
+`leaderboard/ai_audit_assist.py` reads company documents (`.txt`, `.md`, `.pdf`) from a
+data room folder and asks a **local model through Ollama** to propose draft levels,
+one sub-domain at a time, citing the documents. Neither the client's documents nor the
+grid leave the machine: the tool refuses a non-local Ollama server unless
+`--allow-remote` is given. Drafts are capped with the same rules as the form.
 
-To speed up the organizational audit, `leaderboard/ai_audit_assist.py`
-reads company documents (`.txt`, `.md`, `.pdf`) from a data room folder
-and asks Claude to propose draft scores for the 11 audit questions,
-citing evidence from the documents.
+```bash
+ollama pull mistral-small            # or any model you prefer
+export AXIOM_METHODOLOGY_FILE=/path/to/axiom_v1_1.json
+python3 leaderboard/ai_audit_assist.py <data_room_folder> --model mistral-small
+```
 
-✅ **Tested**: document loading (text + PDF) and prompt construction
-verified. The actual Claude API call was not tested in this dev
-environment (no API key available) but follows the same pattern already
-validated elsewhere in this project.
-
-⚠️ **This produces a draft only** — a human must review every proposed
-score before it's entered into `org_audit_form.py`. The AI is
-instructed to never invent evidence: uncovered topics get a "no
-evidence" flag and a score of 0 by default, rather than an assumed
-good practice.
-
-See `leaderboard/data_room/README.md` for usage.
+⚠️ **Draft only** — an assessor must review every level before entering it in `/audit`.
+Local models are usually less reliable than large hosted ones.
 
 ## Automatic blockchain anchoring on tier progression
 
