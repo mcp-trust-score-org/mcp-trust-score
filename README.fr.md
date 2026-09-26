@@ -159,6 +159,14 @@ soumettre automatiquement le score à une API centralisée, sans aucune
 intervention manuelle du développeur.
 
 ```yaml
+jobs:
+  mcp-trust-score:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # obligatoire : GitHub atteste le dépôt qui soumet
+    steps:
+      - uses: actions/checkout@v4
       - name: Vérifier la conformité MCP
         uses: TON-PSEUDO/mcp-trust-score@v1
         with:
@@ -166,6 +174,14 @@ intervention manuelle du développeur.
           submit-to-leaderboard: 'true'
           leaderboard-api-url: 'https://ton-api-hebergee.com'
 ```
+
+🔒 **Soumission authentifiée** : l'Action joint un jeton OIDC signé par
+GitHub, qui atteste le dépôt d'où vient la soumission. L'API ignore le
+`repo_url` déclaré et utilise celui du jeton : impossible de soumettre au
+nom d'un dépôt qui n'est pas le sien. Seules ces soumissions attestées
+apparaissent au classement et comptent pour les paliers EMMA/Silver.
+Limite : le jeton prouve *qui* soumet, pas que le score a été calculé
+honnêtement (un workflow peut être modifié).
 
 ✅ **Testé de bout en bout** : l'API (`leaderboard/api.py`) a été lancée
 en local, l'Action a envoyé une vraie requête HTTP, la donnée est arrivée

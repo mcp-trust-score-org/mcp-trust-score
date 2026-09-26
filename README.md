@@ -82,7 +82,7 @@ jobs:
 | `server-command` | Command to launch your MCP server | required |
 | `min-score` | Minimum NIST score (%) required for the job to pass | `70` |
 | `enable-blockchain-anchor` | Anchors a report hash on OpenTimestamps (Bitcoin) | `false` |
-| `submit-to-leaderboard` | Automatically submits the score to the public leaderboard | `false` |
+| `submit-to-leaderboard` | Automatically submits the score to the public leaderboard (the job needs `permissions: id-token: write`: the submission carries a GitHub OIDC token proving which repository it comes from) | `false` |
 | `leaderboard-api-url` | Leaderboard API URL (required if `submit-to-leaderboard=true`) | `''` |
 
 ## Outputs
@@ -128,7 +128,12 @@ An **optional** automatic submission path also exists
 (`leaderboard/api.py`) — requires hosting it yourself (Render, Railway,
 or a small VPS). Tested end to end locally: real HTTP submission, with
 basic abuse protection (score bounds, hash consistency check, per-repo
-rate limiting).
+rate limiting). Submissions must carry a GitHub Actions OIDC token
+(`permissions: id-token: write`): the API uses the repository attested by
+GitHub, not the one declared, and only such attested submissions are listed
+and count toward EMMA/Silver tiers. Organizational audits can only be
+submitted by auditors holding a token, and audit reports are served under
+unguessable links.
 
 ⚠️ Scores on the leaderboard are self-reported by developers, not
 audited by a third party. The blockchain proof (when present) only

@@ -32,6 +32,22 @@ def write_github_output(name: str, value: str):
         print(f"[output] {name}={value}")
 
 
+def get_github_oidc_token(requests_module, audience: str | None = None) -> str | None:
+    """Demande à GitHub un jeton OIDC attestant le dépôt qui exécute ce job.
+
+    Disponible uniquement si le workflow déclare `permissions: id-token: write`.
+    Le jeton n'est jamais affiché ni écrit sur disque."""
+    url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL")
+    bearer = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+    if not url or not bearer:
+        return None
+    audience = audience or os.environ.get("INPUT_LEADERBOARD-AUDIENCE") or "mcp-trust-score"
+    resp = requests_module.get(url, params={"audience": audience},
+                               headers={"Authorization": f"Bearer {bearer}"}, timeout=10)
+    resp.raise_for_status()
+    return resp.json().get("value")
+
+
 def main():
     server_command_raw = os.environ.get("INPUT_SERVER-COMMAND", "")
     min_score = float(os.environ.get("INPUT_MIN-SCORE", "70"))
@@ -124,7 +140,15 @@ def main():
                         "axiom_score": axiom.percentage,
                     })
 
-                response = requests.post(f"{leaderboard_api_url}/submit", json=submit_payload, timeout=15)
+                oidc_token = get_github_oidc_token(requests)
+                if not oidc_token:
+                    raise RuntimeError(
+                        "jeton OIDC indisponible — ajoute 'permissions: id-token: write' au job "
+                        "(le classement n'accepte que les soumissions dont le dépôt est attesté par GitHub)")
+                response = requests.post(
+                    f"{leaderboard_api_url}/submit", json=submit_payload, timeout=15,
+                    headers={"Authorization": f"Bearer {oidc_token}"},
+                )
                 if response.status_code == 200:
                     print("   ✅ Soumis avec succès au classement public.")
                 else:
