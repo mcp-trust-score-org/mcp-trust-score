@@ -11,12 +11,15 @@ n'auraient pas partagé le même fichier SQLite.
 Routes :
 - /                    -> classement public (HTML)
 - /leaderboard.json    -> classement public (JSON)
-- /submit              -> soumission automatique de score (POST)
+- /submit              -> soumission automatique de score (POST, jeton OIDC GitHub Actions)
 - /badge               -> calcul du palier technique EMMA/Silver
 - /audit               -> formulaire d'audit organisationnel (HTML)
-- /submit-audit        -> soumission d'un audit (POST)
+- /submit-audit        -> soumission d'un audit (POST, jeton auditeur)
 
-Prérequis : pip install flask
+Contrôles d'accès : voir security.py (fermé par défaut si la
+configuration manque). Variables : OIDC_AUDIENCE, AUDITOR_TOKENS, ADMIN_TOKEN.
+
+Prérequis : pip install -r requirements.txt
 """
 
 import hashlib
@@ -25,11 +28,16 @@ import os
 import db as db_layer
 from datetime import datetime, timedelta
 
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, g, request, jsonify, render_template_string
 
+import security
+from security import require_admin, require_auditor, require_auditor_page, require_github_oidc
+
+import axiom
+import axiom_pages
 import badge_tier
 import organizational_audit
-from organizational_audit import AUDIT_QUESTIONNAIRE
+from organizational_audit import AUDIT_QUESTIONNAIRE  # questionnaire v1.0, pour relire les anciens audits
 from blockchain_anchor import compute_report_hash, create_opentimestamps_proof
 import framework_watch
 
@@ -38,7 +46,13 @@ DB_PATH = "leaderboard.db"
 
 RATE_LIMIT_MINUTES = 10
 GOLD_MIN_PERCENTAGE = 75.0
+# Un score élevé sur une petite partie de la grille ne suffit pas pour un palier.
+GOLD_MIN_COVERAGE = 80.0
 TIER_ORDER = {"none": 0, "EMMA": 1, "Silver": 2}
+VERIFIED = "github-oidc"
+MAX_SERVER_NAME = 100
+MAX_COMPANY_NAME = 200
+MAX_EVIDENCE_CHARS = 2000
 
 def get_db():
     return db_layer.get_db(DB_PATH)
@@ -85,6 +99,52 @@ def init_db():
         )
         """)
     conn.close()
+    _migrate_security_columns()
+
+
+def _existing_columns(conn, table: str) -> set:
+    if db_layer.USE_POSTGRES:
+        rows = conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = ?", (table,)
+        ).fetchall()
+        return {r["column_name"] for r in rows}
+    return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _migrate_security_columns():
+    """Ajoute les colonnes de traçabilité aux bases existantes (idempotent).
+
+    Les lignes antérieures gardent verification='none' / auditor NULL :
+    elles restent en base mais ne comptent plus pour les paliers et ne
+    sont plus affichées publiquement (rien ne prouve qui les a soumises)."""
+    wanted = {
+        "submissions": [("verification", "TEXT DEFAULT 'none'"), ("workflow_ref", "TEXT"),
+                        ("run_id", "TEXT"), ("git_ref", "TEXT")],
+        "org_audits": [("auditor", "TEXT"), ("report_token", "TEXT"),
+                       ("methodology_version", "TEXT"), ("coverage", "REAL")],
+    }
+    conn = get_db()
+    with conn:
+        for table, columns in wanted.items():
+            existing = _existing_columns(conn, table)
+            for name, ddl in columns:
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+        # Les anciens rapports étaient accessibles par simple numéro : on leur
+        # donne un identifiant non devinable (l'ancien lien cesse de marcher).
+        for row in conn.execute("SELECT id FROM org_audits WHERE report_token IS NULL").fetchall():
+            conn.execute("UPDATE org_audits SET report_token = ? WHERE id = ?",
+                         (security.new_report_token(), row["id"]))
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_report_token ON org_audits(report_token)")
+    conn.close()
+
+
+@app.after_request
+def _security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    return response
 
 
 init_db()  # Appelé au chargement du module — nécessaire pour gunicorn,
@@ -123,21 +183,35 @@ def check_rate_limit(repo_url: str) -> bool:
     return datetime.now() - last_submitted > timedelta(minutes=RATE_LIMIT_MINUTES)
 
 
+def _is_score(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value <= 100
+
+
 @app.route("/submit", methods=["POST"])
+@require_github_oidc
 def submit():
-    payload = request.get_json()
-    required = ["server_name", "repo_url", "nist_score", "axiom_score"]
+    payload = request.get_json(silent=True) or {}
+    required = ["server_name", "nist_score", "axiom_score"]
     missing = [f for f in required if f not in payload]
     if missing:
         return jsonify({"error": f"Champs manquants : {missing}"}), 400
-    if not (0 <= payload["nist_score"] <= 100) or not (0 <= payload["axiom_score"] <= 100):
-        return jsonify({"error": "Les scores doivent être entre 0 et 100"}), 400
+    if not _is_score(payload["nist_score"]) or not _is_score(payload["axiom_score"]):
+        return jsonify({"error": "Les scores doivent être des nombres entre 0 et 100"}), 400
+    server_name = str(payload["server_name"]).strip()[:MAX_SERVER_NAME]
+    if not server_name:
+        return jsonify({"error": "server_name vide"}), 400
+
+    # Le dépôt est celui que GitHub atteste dans le jeton, pas celui déclaré.
+    repo_url = g.repo_url
+    declared = payload.get("repo_url")
+    if declared and security.normalize_repo_url(str(declared)) != repo_url:
+        return jsonify({"error": f"repo_url déclaré différent du dépôt attesté par GitHub ({repo_url})"}), 403
+
     if not verify_hash_consistency(payload):
         return jsonify({"error": "Le hash fourni ne correspond pas aux données envoyées"}), 400
-    if not check_rate_limit(payload["repo_url"]):
+    if not check_rate_limit(repo_url):
         return jsonify({"error": f"Trop de soumissions récentes. Réessaie dans {RATE_LIMIT_MINUTES} minutes."}), 429
-
-    repo_url = payload["repo_url"]
+    claims = g.oidc_claims
 
     # Palier AVANT cette soumission, pour détecter une progression après coup
     previous_history = badge_tier.get_submission_history(DB_PATH, repo_url)
@@ -146,10 +220,11 @@ def submit():
     conn = get_db()
     with conn:
         conn.execute(f"""
-            INSERT INTO submissions (server_name, repo_url, nist_score, axiom_score, proof_hash, submitted_at)
-            VALUES (?, ?, ?, ?, ?, {db_layer.now_expr()})
-        """, (payload["server_name"], repo_url, payload["nist_score"],
-              payload["axiom_score"], payload.get("proof_hash")))
+            INSERT INTO submissions (server_name, repo_url, nist_score, axiom_score, proof_hash,
+                                     verification, workflow_ref, run_id, git_ref, submitted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, {db_layer.now_expr()})
+        """, (server_name, repo_url, payload["nist_score"], payload["axiom_score"], payload.get("proof_hash"),
+              VERIFIED, claims.get("workflow_ref"), str(claims.get("run_id") or ""), claims.get("ref")))
     conn.close()
 
     # Palier APRÈS cette soumission
@@ -157,7 +232,7 @@ def submit():
     new_tier_result = badge_tier.compute_badge_tier(updated_history)
     new_tier = new_tier_result.tier
 
-    response = {"ok": True}
+    response = {"ok": True, "repo_url": repo_url, "verification": VERIFIED}
 
     # Ancrage automatique UNIQUEMENT en cas de vraie progression (ex: none->EMMA,
     # EMMA->Silver) — pas à chaque soumission qui maintient le même palier,
@@ -228,9 +303,12 @@ def _attempt_badge_anchor(repo_url: str, tier_result) -> dict:
 def leaderboard_json():
     conn = get_db()
     rows = conn.execute("""
-        SELECT s.* FROM submissions s
-        INNER JOIN (SELECT repo_url, MAX(submitted_at) AS max_date FROM submissions GROUP BY repo_url) latest
+        SELECT s.server_name, s.repo_url, s.nist_score, s.axiom_score, s.proof_hash, s.submitted_at
+        FROM submissions s
+        INNER JOIN (SELECT repo_url, MAX(submitted_at) AS max_date FROM submissions
+                    WHERE verification = 'github-oidc' GROUP BY repo_url) latest
         ON s.repo_url = latest.repo_url AND s.submitted_at = latest.max_date
+        WHERE s.verification = 'github-oidc'
         ORDER BY s.nist_score DESC
     """).fetchall()
     conn.close()
@@ -260,7 +338,7 @@ LEADERBOARD_PAGE = """
   </style>
 </head>
 <body>
-  <div class="nav"><a href="/">🏆 Classement</a><a href="/audit">🔍 Audit organisationnel</a><a href="/companies">🏅 Entreprises certifiées</a></div>
+  <div class="nav"><a href="/">🏆 Classement</a><a href="/audit">🔍 Audit organisationnel</a><a href="/companies">🏅 Entreprises évaluées</a><a href="/methodologie">📐 Méthodologie</a></div>
   <h1>🏆 MCP Trust Score — Classement</h1>
   <table>
     <tr><th>Rang</th><th>Serveur</th><th>Score NIST</th><th>Score AXIOM</th><th>Palier</th><th>Soumis le</th><th>Preuve</th></tr>
@@ -278,7 +356,7 @@ LEADERBOARD_PAGE = """
         {% if e.badge_tier != 'none' %}
           {% if e.anchor_status == 'anchored' %}<br><span style="font-size:11px;color:#16a34a;">⛓️ ancré</span>
           {% elif e.anchor_status == 'pending' or e.anchor_status == 'failed' %}<br><span style="font-size:11px;color:#94a3b8;">ancrage {{ e.anchor_status }}</span>
-          {% else %}<br><button onclick="anchorBadge('{{ e.repo_url }}', this)" style="font-size:11px;padding:2px 6px;">Ancrer</button>
+          {% else %}<br><span style="font-size:11px;color:#94a3b8;">non ancré</span>
           {% endif %}
         {% endif %}
       </td>
@@ -288,25 +366,6 @@ LEADERBOARD_PAGE = """
     {% endfor %}
   </table>
 
-  <script>
-    async function anchorBadge(repoUrl, btn) {
-      btn.disabled = true;
-      btn.textContent = 'Ancrage...';
-      try {
-        const res = await fetch('/badge/anchor', {
-          method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({repo_url: repoUrl}),
-        });
-        const data = await res.json();
-        alert(data.anchor_status === 'anchored' ? 'Ancré avec succès !' : ('Statut : ' + (data.anchor_status || data.error)));
-        location.reload();
-      } catch (e) {
-        alert('Erreur : ' + e.message);
-        btn.disabled = false;
-        btn.textContent = 'Ancrer';
-      }
-    }
-  </script>
 </body>
 </html>
 """
@@ -316,9 +375,12 @@ LEADERBOARD_PAGE = """
 def leaderboard_page():
     conn = get_db()
     rows = conn.execute("""
-        SELECT s.* FROM submissions s
-        INNER JOIN (SELECT repo_url, MAX(submitted_at) AS max_date FROM submissions GROUP BY repo_url) latest
+        SELECT s.server_name, s.repo_url, s.nist_score, s.axiom_score, s.proof_hash, s.submitted_at
+        FROM submissions s
+        INNER JOIN (SELECT repo_url, MAX(submitted_at) AS max_date FROM submissions
+                    WHERE verification = 'github-oidc' GROUP BY repo_url) latest
         ON s.repo_url = latest.repo_url AND s.submitted_at = latest.max_date
+        WHERE s.verification = 'github-oidc'
         ORDER BY s.nist_score DESC
     """).fetchall()
     conn.close()
@@ -389,6 +451,7 @@ def badge():
 
 
 @app.route("/badge/anchor", methods=["POST"])
+@require_admin
 def anchor_badge():
     """Déclenche l'ancrage blockchain réel d'un badge — action explicite,
     séparée de la simple consultation (/badge), pour ne pas refaire un
@@ -461,10 +524,13 @@ def anchor_badge():
 
 
 # ============================================================
-# AUDIT ORGANISATIONNEL (repris de org_audit_form.py)
+# AUDIT ORGANISATIONNEL — méthode AXIOM v1.1 (voir axiom.py et methodology/)
 # ============================================================
 
-def compute_org_tier(percentage: float, linked_repo_url: str) -> tuple:
+def compute_org_tier(percentage: float, linked_repo_url: str, coverage: float | None = None) -> tuple:
+    if coverage is not None and coverage < GOLD_MIN_COVERAGE:
+        return "none", (f"Couverture de la grille ({coverage}%) sous le minimum requis pour un palier "
+                        f"({GOLD_MIN_COVERAGE}%).")
     if percentage < GOLD_MIN_PERCENTAGE:
         return "none", f"Score organisationnel ({percentage}%) sous le seuil Gold ({GOLD_MIN_PERCENTAGE}%)."
 
@@ -483,168 +549,7 @@ def compute_org_tier(percentage: float, linked_repo_url: str) -> tuple:
     return "Gold", f"Score organisationnel {percentage}% ≥ {GOLD_MIN_PERCENTAGE}% — Gold atteint, mais palier technique Silver requis pour Platinum non confirmé."
 
 
-AUDIT_FORM_PAGE = """
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-  <meta charset="UTF-8">
-  <title>Audit organisationnel — MCP Trust Score</title>
-  <style>
-    * { box-sizing: border-box; }
-    body {
-      font-family: 'Segoe UI', -apple-system, Arial, sans-serif;
-      max-width: 820px; margin: 0 auto; padding: 0 24px 60px;
-      color: #1e293b; background: #f8fafc;
-    }
-    .nav { padding: 20px 0; margin-bottom: 8px; }
-    .nav a { color: #475569; margin-right: 20px; text-decoration: none; font-size: 14px; font-weight: 500; }
-    .nav a:hover { color: #2563eb; }
-    .header {
-      background: linear-gradient(135deg, #0f172a, #1e293b);
-      color: white; padding: 40px 36px; border-radius: 12px; margin-bottom: 32px;
-    }
-    .header h1 { margin: 0 0 8px; font-size: 26px; }
-    .header p { margin: 0; color: #cbd5e1; font-size: 15px; }
-    .company-card {
-      background: white; border-radius: 12px; padding: 28px 32px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 28px;
-    }
-    .field-label { font-weight: 600; font-size: 13px; color: #334155; display: block; margin-bottom: 6px; }
-    input[type=text] {
-      width: 100%; padding: 11px 14px; border-radius: 8px; border: 1px solid #cbd5e1;
-      font-size: 14px; margin-bottom: 18px;
-    }
-    input[type=text]:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
-    .domain-section { margin-bottom: 28px; }
-    .domain-title {
-      font-size: 16px; font-weight: 700; color: #0f172a; margin: 32px 0 14px;
-      padding-bottom: 8px; border-bottom: 2px solid #e2e8f0;
-    }
-    .question-card {
-      background: white; border-radius: 10px; padding: 22px 26px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 14px;
-    }
-    .sub-domain-tag {
-      display: inline-block; background: #eff6ff; color: #1d4ed8;
-      font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 6px;
-      text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 10px;
-    }
-    .question-text { font-size: 15px; font-weight: 500; margin: 0 0 8px; line-height: 1.5; }
-    .good-practice { color: #64748b; font-size: 13px; font-style: italic; margin: 0 0 16px; }
-    .score-options { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
-    .score-option { flex: 1; min-width: 90px; }
-    .score-option input { display: none; }
-    .score-option label {
-      display: block; text-align: center; padding: 10px 6px; border-radius: 8px;
-      border: 1.5px solid #e2e8f0; cursor: pointer; font-size: 12px; font-weight: 600;
-      color: #64748b; transition: all 0.15s;
-    }
-    .score-option input:checked + label {
-      border-color: #2563eb; background: #eff6ff; color: #1d4ed8;
-    }
-    .evidence-field label { font-size: 12px; color: #64748b; margin-bottom: 4px; display: block; }
-    .evidence-field textarea {
-      width: 100%; min-height: 50px; padding: 8px 12px; border-radius: 6px;
-      border: 1px solid #e2e8f0; font-size: 13px; font-family: inherit; resize: vertical;
-    }
-    .submit-btn {
-      background: #0f172a; color: white; border: none; padding: 15px 24px;
-      border-radius: 10px; cursor: pointer; font-weight: 700; font-size: 15px;
-      width: 100%; margin-top: 24px;
-    }
-    .submit-btn:hover { background: #1e293b; }
-    .submit-btn:disabled { background: #94a3b8; cursor: not-allowed; }
-  </style>
-</head>
-<body>
-  <div class="nav"><a href="/">🏆 Classement</a><a href="/audit">🔍 Audit organisationnel</a><a href="/companies">🏅 Entreprises certifiées</a></div>
-
-  <div class="header">
-    <h1>Audit de maturité organisationnelle IA</h1>
-    <p>Référentiel AXIOM — Domaines Stratégie, Gouvernance, Dépendance fournisseurs, Impact financier, Durabilité, Empowerment. Évaluation humaine avec preuves à l'appui, non automatisée.</p>
-  </div>
-
-  <form id="auditForm">
-    <div class="company-card">
-      <span class="field-label">Nom de l'entreprise auditée</span>
-      <input type="text" id="companyName" required>
-      <span class="field-label">Repo MCP lié (optionnel — pour l'éligibilité Platinum)</span>
-      <input type="text" id="linkedRepo" placeholder="https://github.com/...">
-    </div>
-
-    {% for q in questions %}
-    {% if loop.first or q.domain != questions[loop.index0 - 1].domain %}
-    <div class="domain-title">{{ q.domain }}</div>
-    {% endif %}
-    <div class="question-card">
-      <span class="sub-domain-tag">{{ q.sub_domain }}</span>
-      <p class="question-text">{{ q.question }}</p>
-      <p class="good-practice">Bonne pratique attendue : {{ q.good_practice_description }}</p>
-
-      <div class="score-options" data-question-id="{{ loop.index0 }}">
-        {% for val, lbl in [(0,'Absence'),(1,'Premiers pas'),(2,'En construction'),(3,'Bonne pratique'),(4,'Excellence')] %}
-        <div class="score-option">
-          <input type="radio" name="score-{{ loop.index0 }}" id="s-{{ loop.index0 }}-{{ val }}" value="{{ val }}" required>
-          <label for="s-{{ loop.index0 }}-{{ val }}">{{ val }} — {{ lbl }}</label>
-        </div>
-        {% endfor %}
-      </div>
-
-      <div class="evidence-field">
-        <label>Preuve / justification (recommandé — document, exemple concret, référence)</label>
-        <textarea data-evidence-id="{{ loop.index0 }}" placeholder="Ex : Charte IA v2, section 3.1 ; entretien du 12/01 avec le CTO ; ..."></textarea>
-      </div>
-    </div>
-    {% endfor %}
-
-    <button type="submit" class="submit-btn" id="submitBtn">Générer le bilan complet</button>
-  </form>
-
-  <script>
-    document.getElementById('auditForm').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const btn = document.getElementById('submitBtn');
-      btn.disabled = true;
-      btn.textContent = 'Génération du bilan...';
-
-      const nQuestions = document.querySelectorAll('.score-options').length;
-      const scores = [];
-      const evidences = [];
-      for (let i = 0; i < nQuestions; i++) {
-        const checked = document.querySelector(`input[name="score-${i}"]:checked`);
-        scores.push(checked ? parseInt(checked.value) : null);
-        const ev = document.querySelector(`[data-evidence-id="${i}"]`);
-        evidences.push(ev ? ev.value : '');
-      }
-
-      const payload = {
-        company_name: document.getElementById('companyName').value,
-        linked_repo_url: document.getElementById('linkedRepo').value,
-        scores: scores,
-        evidences: evidences,
-      };
-
-      const res = await fetch('/submit-audit', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(payload),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        window.location.href = '/audit-report/' + data.audit_id;
-      } else {
-        const err = await res.json();
-        alert('Erreur : ' + (err.error || 'inconnue'));
-        btn.disabled = false;
-        btn.textContent = 'Générer le bilan complet';
-      }
-    });
-  </script>
-</body>
-</html>
-"""
-
-
+# Ancien bilan (questionnaire v1.0) : conservé pour relire les audits enregistrés avant la v1.1.
 AUDIT_REPORT_PAGE = """
 <!DOCTYPE html>
 <html lang="fr">
@@ -693,7 +598,7 @@ AUDIT_REPORT_PAGE = """
   </style>
 </head>
 <body>
-  <div class="nav"><a href="/">🏆 Classement</a><a href="/audit">🔍 Audit organisationnel</a><a href="/companies">🏅 Entreprises certifiées</a></div>
+  <div class="nav"><a href="/">🏆 Classement</a><a href="/audit">🔍 Audit organisationnel</a><a href="/companies">🏅 Entreprises évaluées</a><a href="/methodologie">📐 Méthodologie</a></div>
 
   <div class="report-header">
     <p class="company">{{ company_name }}</p>
@@ -747,56 +652,117 @@ AUDIT_REPORT_PAGE = """
 """
 
 
+def _public_context() -> dict:
+    public = axiom.load_public()
+    return {
+        "version": axiom.version_label(),
+        "subs": public["sub_domains"],
+        "n": len(public["sub_domains"]),
+        "levels": axiom.allowed_levels(),
+        "labels": public["scale"]["labels"],
+        "evidence_types": public["evidence_types"],
+        "measured_cap": public["measured_cap"],
+        "gold_min": GOLD_MIN_PERCENTAGE,
+        "coverage_min": GOLD_MIN_COVERAGE,
+    }
+
+
+def _grid_unavailable():
+    return ("Audit indisponible : la grille AXIOM confidentielle n'est pas configurée sur ce serveur.", 503,
+            {"Content-Type": "text/plain; charset=utf-8"})
+
+
 @app.route("/audit")
+@require_auditor_page
 def audit_form():
-    return render_template_string(AUDIT_FORM_PAGE, questions=AUDIT_QUESTIONNAIRE)
+    # Page réservée aux évaluateurs : elle affiche la grille confidentielle.
+    try:
+        method = axiom.load_methodology()
+    except axiom.MethodologyUnavailable:
+        return _grid_unavailable()
+    ctx = _public_context() | {"subs": method["sub_domains"], "auditor": g.auditor}
+    page = render_template_string(axiom_pages.AUDIT_FORM_V11, **ctx)
+    return page, 200, {"Cache-Control": "private, no-store", "X-Robots-Tag": "noindex, nofollow"}
+
+
+@app.route("/methodologie")
+def methodology_page():
+    # Partie publique uniquement : aucune donnée de la grille confidentielle.
+    return render_template_string(axiom_pages.METHODOLOGY_PAGE, **_public_context())
 
 
 @app.route("/submit-audit", methods=["POST"])
+@require_auditor
 def submit_audit():
-    payload = request.get_json()
-    company_name = payload.get("company_name", "").strip()
-    linked_repo_url = payload.get("linked_repo_url", "").strip() or None
-    scores = payload.get("scores", [])
-    evidences = payload.get("evidences", [])
+    payload = request.get_json(silent=True) or {}
+    company_name = str(payload.get("company_name") or "").strip()[:MAX_COMPANY_NAME]
+    raw_repo = str(payload.get("linked_repo_url") or "").strip()
+    linked_repo_url = security.normalize_repo_url(raw_repo)
 
     if not company_name:
         return jsonify({"error": "Nom d'entreprise requis"}), 400
-    if len(scores) != len(AUDIT_QUESTIONNAIRE):
-        return jsonify({"error": f"Attendu {len(AUDIT_QUESTIONNAIRE)} scores, reçu {len(scores)}"}), 400
-    if any(s not in [0, 1, 2, 3, 4] for s in scores):
-        return jsonify({"error": "Chaque score doit être entre 0 et 4 (toutes les questions sont obligatoires)"}), 400
+    if raw_repo and not linked_repo_url:
+        return jsonify({"error": "Repo lié invalide : attendu https://github.com/<owner>/<repo>"}), 400
+    try:
+        entries = axiom.parse_entries(payload.get("entries", []))
+    except axiom.MethodologyUnavailable as e:
+        return jsonify({"error": str(e)}), 503
+    except axiom.ValidationError as e:
+        return jsonify({"error": str(e)}), 400
 
-    percentage = round(100 * sum(scores) / (len(scores) * 4), 1)
-    tier, reason = compute_org_tier(percentage, linked_repo_url)
+    result = axiom.evaluate(entries)
+    if result["score"] is None:
+        return jsonify({"error": "Aucun sous-domaine évalué"}), 400
+    tier, reason = compute_org_tier(result["score"], linked_repo_url, result["coverage"])
 
+    report_token = security.new_report_token()
+    stored = {"methodology": result["methodology"], "entries": axiom.entries_to_json(entries)}
     conn = get_db()
     with conn:
-        cursor = conn.execute(f"""
-            INSERT INTO org_audits (company_name, linked_repo_url, answers_json, evidences_json, percentage, tier, audited_at)
-            VALUES (?, ?, ?, ?, ?, ?, {db_layer.now_expr()})
-            {"RETURNING id" if db_layer.USE_POSTGRES else ""}
-        """, (company_name, linked_repo_url, json.dumps(scores), json.dumps(evidences), percentage, tier))
-
-        if db_layer.USE_POSTGRES:
-            audit_id = cursor.fetchone()["id"]
-        else:
-            audit_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+        conn.execute(f"""
+            INSERT INTO org_audits (company_name, linked_repo_url, answers_json, evidences_json, percentage, tier,
+                                    auditor, report_token, methodology_version, coverage, audited_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {db_layer.now_expr()})
+        """, (company_name, linked_repo_url, json.dumps(stored, ensure_ascii=False), None, result["score"], tier,
+              g.auditor, report_token, axiom.load_public()["version"], result["coverage"]))
     conn.close()
 
-    return jsonify({"tier": tier, "percentage": percentage, "reason": reason, "audit_id": audit_id})
+    return jsonify({"tier": tier, "percentage": result["score"], "coverage": result["coverage"],
+                    "reason": reason, "report_url": f"/audit-report/{report_token}"})
 
 
-@app.route("/audit-report/<int:audit_id>")
-def audit_report(audit_id):
+@app.route("/audit-report/<report_token>")
+def audit_report(report_token):
+    # Lien non devinable, à transmettre uniquement à l'entreprise auditée.
+    if len(report_token) < 20:
+        return "Audit introuvable", 404
     conn = get_db()
-    row = conn.execute("SELECT * FROM org_audits WHERE id = ?", (audit_id,)).fetchone()
+    row = conn.execute("SELECT * FROM org_audits WHERE report_token = ?", (report_token,)).fetchone()
     conn.close()
 
     if not row:
         return "Audit introuvable", 404
 
     row = dict(row)
+    headers = {"X-Robots-Tag": "noindex, nofollow", "Referrer-Policy": "no-referrer",
+               "Cache-Control": "private, no-store"}
+    if row.get("methodology_version"):
+        if not axiom.is_available():
+            return _grid_unavailable()
+        stored = json.loads(row["answers_json"])
+        entries = axiom.parse_entries(stored["entries"])
+        result = axiom.evaluate(entries)
+        tier, tier_reason = compute_org_tier(result["score"], row["linked_repo_url"], result["coverage"])
+        domains_order = list(result["domains"].keys())
+        radar_svg = organizational_audit.generate_radar_svg(
+            {d: (v["score"] or 0) for d, v in result["domains"].items()}, size=560, order=domains_order)
+        page = render_template_string(
+            axiom_pages.AUDIT_REPORT_V11, company_name=row["company_name"], audited_at=row["audited_at"],
+            auditor=row.get("auditor") or "évaluateur non identifié", tier=row["tier"], tier_reason=tier_reason,
+            r=result, radar_svg=radar_svg)
+        return page, 200, headers
+
+    # Ancien format (questionnaire v1.0, 11 questions notées 0-4)
     scores = json.loads(row["answers_json"])
     evidences = json.loads(row["evidences_json"]) if row.get("evidences_json") else [""] * len(scores)
 
@@ -805,7 +771,7 @@ def audit_report(audit_id):
 
     _, tier_reason = compute_org_tier(row["percentage"], row["linked_repo_url"])
 
-    return render_template_string(
+    page = render_template_string(
         AUDIT_REPORT_PAGE,
         company_name=row["company_name"],
         audited_at=row["audited_at"],
@@ -817,6 +783,7 @@ def audit_report(audit_id):
         weaknesses=report["weaknesses"],
         details=report["details"],
     )
+    return page, 200, headers
 
 
 COMPANIES_PAGE = """
@@ -824,7 +791,7 @@ COMPANIES_PAGE = """
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
-  <title>MCP Trust Score — Entreprises certifiées</title>
+  <title>MCP Trust Score — Entreprises évaluées</title>
   <style>
     body { font-family: -apple-system, Arial, sans-serif; max-width: 800px; margin: 40px auto; color: #1e293b; padding: 0 20px; }
     .nav { margin-bottom: 20px; }
@@ -839,12 +806,12 @@ COMPANIES_PAGE = """
   </style>
 </head>
 <body>
-  <div class="nav"><a href="/">🏆 Classement</a><a href="/audit">🔍 Audit organisationnel</a><a href="/companies">🏅 Entreprises certifiées</a></div>
-  <h1>🏅 Entreprises certifiées Gold / Platinum</h1>
-  <p>Audit organisationnel AXIOM (Domaines 1, 2, 3, 6, 7, 8) — évalué par un humain.</p>
+  <div class="nav"><a href="/">🏆 Classement</a><a href="/audit">🔍 Audit organisationnel</a><a href="/companies">🏅 Entreprises évaluées</a><a href="/methodologie">📐 Méthodologie</a></div>
+  <h1>🏅 Entreprises évaluées — paliers Gold / Platinum</h1>
+  <p>Évaluations AXIOM réalisées par un évaluateur identifié, selon la <a href="/methodologie">méthodologie publique</a>.</p>
 
   <table>
-    <tr><th>Entreprise</th><th>Palier</th><th>Score organisationnel</th><th>Repo lié</th><th>Audité le</th></tr>
+    <tr><th>Entreprise</th><th>Palier</th><th>Score</th><th>Couverture</th><th>Repo lié</th><th>Évalué le</th></tr>
     {% for c in companies %}
     <tr>
       <td>{{ c.company_name }}</td>
@@ -854,6 +821,7 @@ COMPANIES_PAGE = """
         {% endif %}
       </td>
       <td>{{ c.percentage }}%</td>
+      <td>{{ (c.coverage|string + '%') if c.coverage is not none else '—' }}</td>
       <td>{% if c.linked_repo_url %}<a href="{{ c.linked_repo_url }}">{{ c.linked_repo_url }}</a>{% else %}—{% endif %}</td>
       <td>{{ c.audited_at }}</td>
     </tr>
@@ -861,9 +829,9 @@ COMPANIES_PAGE = """
   </table>
 
   <div class="disclaimer">
-    ⚠️ Ces certifications proviennent d'un audit humain déclaratif (formulaire rempli par
-    un auditeur), pas d'une vérification automatisée indépendante — contrairement aux
-    paliers techniques EMMA/Silver, calculés directement depuis le serveur MCP.
+    ⚠️ Ces paliers résultent d'une évaluation AXIOM : chaque niveau est plafonné par le type de
+    preuve obtenue, et le score se lit avec sa couverture. Ce n'est pas une certification ; les
+    correspondances avec d'autres référentiels sont indicatives.
   </div>
 </body>
 </html>
@@ -874,13 +842,13 @@ COMPANIES_PAGE = """
 def companies_page():
     conn = get_db()
     rows = conn.execute("""
-        SELECT o.* FROM org_audits o
+        SELECT o.company_name, o.tier, o.percentage, o.coverage, o.linked_repo_url, o.audited_at FROM org_audits o
         INNER JOIN (
             SELECT company_name, MAX(audited_at) AS max_date
-            FROM org_audits WHERE tier IN ('Gold', 'Platinum')
+            FROM org_audits WHERE auditor IS NOT NULL
             GROUP BY company_name
         ) latest ON o.company_name = latest.company_name AND o.audited_at = latest.max_date
-        WHERE o.tier IN ('Gold', 'Platinum')
+        WHERE o.tier IN ('Gold', 'Platinum') AND o.auditor IS NOT NULL
         ORDER BY o.tier DESC, o.percentage DESC
     """).fetchall()
     conn.close()
@@ -891,13 +859,13 @@ def companies_page():
 def companies_json():
     conn = get_db()
     rows = conn.execute("""
-        SELECT o.* FROM org_audits o
+        SELECT o.company_name, o.tier, o.percentage, o.coverage, o.linked_repo_url, o.audited_at FROM org_audits o
         INNER JOIN (
             SELECT company_name, MAX(audited_at) AS max_date
-            FROM org_audits WHERE tier IN ('Gold', 'Platinum')
+            FROM org_audits WHERE auditor IS NOT NULL
             GROUP BY company_name
         ) latest ON o.company_name = latest.company_name AND o.audited_at = latest.max_date
-        WHERE o.tier IN ('Gold', 'Platinum')
+        WHERE o.tier IN ('Gold', 'Platinum') AND o.auditor IS NOT NULL
         ORDER BY o.tier DESC, o.percentage DESC
     """).fetchall()
     conn.close()
@@ -919,6 +887,7 @@ def framework_status():
 
 
 @app.route("/framework-check", methods=["POST"])
+@require_admin
 def trigger_framework_check():
     """Déclenche une vérification à la demande — utile pour tester,
     en attendant une vraie tâche planifiée (cron) en production."""
@@ -939,7 +908,7 @@ def trigger_framework_check():
 
 @app.route("/subscribe", methods=["POST"])
 def subscribe():
-    payload = request.get_json()
+    payload = request.get_json(silent=True) or {}
     email = (payload.get("email") or "").strip().lower()
     if not email or "@" not in email:
         return jsonify({"error": "Email valide requis"}), 400
@@ -958,6 +927,7 @@ def subscribe():
 
 
 @app.route("/test-email", methods=["POST"])
+@require_admin
 def test_email():
     """Envoie un email de test à tous les abonnés actuels, avec des
     données factices — sert uniquement à vérifier que la configuration

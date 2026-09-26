@@ -13,13 +13,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Déclenche la vérification des référentiels
+        env:
+          # Secret du dépôt = même valeur que ADMIN_TOKEN côté serveur
+          ADMIN_TOKEN: ${{ secrets.MCP_TRUST_ADMIN_TOKEN }}
         run: |
-          response=$(curl -s -X POST https://mcp-trust-score.onrender.com/framework-check)
-          echo "Réponse : $response"
+          status=$(curl -s -o response.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $ADMIN_TOKEN" \
+            https://mcp-trust-score.onrender.com/framework-check)
+          echo "HTTP $status — réponse : $(cat response.json)"
 
-          # Fait échouer le job si la requête elle-même a échoué (pas si
-          # simplement aucun changement n'a été détecté)
-          if [ -z "$response" ]; then
-            echo "❌ Aucune réponse reçue du serveur"
+          # Fait échouer le job si la requête a échoué (pas si simplement
+          # aucun changement n'a été détecté)
+          if [ "$status" != "200" ]; then
+            echo "❌ Échec de la vérification (HTTP $status)"
             exit 1
           fi

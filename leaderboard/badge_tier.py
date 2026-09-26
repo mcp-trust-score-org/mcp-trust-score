@@ -60,7 +60,10 @@ def get_submission_history(db_path: str, repo_url: str) -> list[dict]:
     triées de la plus récente à la plus ancienne."""
     conn = db_layer.get_db(db_path)
     rows = conn.execute(
-        "SELECT * FROM submissions WHERE repo_url = ? ORDER BY submitted_at DESC",
+        # Seules les soumissions dont le dépôt est attesté par GitHub (OIDC)
+        # comptent pour un palier — voir security.py.
+        "SELECT * FROM submissions WHERE repo_url = ? AND verification = 'github-oidc' "
+        "ORDER BY submitted_at DESC",
         (repo_url,)
     ).fetchall()
     conn.close()

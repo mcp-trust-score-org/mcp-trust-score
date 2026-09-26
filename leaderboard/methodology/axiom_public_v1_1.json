@@ -1,0 +1,244 @@
+{
+ "name": "AXIOM",
+ "version": "1.1",
+ "note": "Partie publique de la méthode AXIOM. Le texte détaillé des niveaux, les règles de preuve, les pondérations et les correspondances sont confidentiels.",
+ "scale": {
+  "min": 0,
+  "max": 4,
+  "step": 0.5,
+  "cumulative": true,
+  "labels": [
+   "Absence",
+   "Initial",
+   "Défini",
+   "Opérationnel",
+   "Optimisé"
+  ]
+ },
+ "evidence_types": [
+  {
+   "name": "Aucune",
+   "max_level": 0,
+   "description": "Sans preuve, aucun niveau ne peut être accordé."
+  },
+  {
+   "name": "Source publique",
+   "max_level": 2,
+   "description": "Analyse de l'extérieur (site, presse, LinkedIn, rapports)."
+  },
+  {
+   "name": "Entretien",
+   "max_level": 2,
+   "description": "Déclaration non étayée par un document."
+  },
+  {
+   "name": "Document",
+   "max_level": 3,
+   "description": "Document interne remis à l'évaluateur."
+  },
+  {
+   "name": "Vérifiée par l'évaluateur",
+   "max_level": 4,
+   "description": "Démonstration, échantillon contrôlé, accès aux outils."
+  },
+  {
+   "name": "Mesure technique",
+   "max_level": 4,
+   "description": "Test ou mesure réalisé par l'évaluateur (banc d'essai, surveillance)."
+  }
+ ],
+ "measured_evidence": "Mesure technique",
+ "measured_cap": 2,
+ "scoring": "sum(level*weight)/sum(4*weight) over evaluated sub-domains; coverage = sum(4*weight evaluated)/sum(4*weight all)",
+ "sub_domains": [
+  {
+   "id": "1.1",
+   "domain_number": 1,
+   "domain": "1. Strategy & Vision",
+   "title": "Vision IA",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "1.2",
+   "domain_number": 1,
+   "domain": "1. Strategy & Vision",
+   "title": "Stratégie IA",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "1.3",
+   "domain_number": 1,
+   "domain": "1. Strategy & Vision",
+   "title": "Déclinaison du plan stratégique IA",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "2.1",
+   "domain_number": 2,
+   "domain": "2. Governance & Organizational Maturity",
+   "title": "Pilotage et gouvernance 360°",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "2.2",
+   "domain_number": 2,
+   "domain": "2. Governance & Organizational Maturity",
+   "title": "Modèle organisationnel pour piloter la transformation IA, agentique et un passage à l’échelle",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "2.3",
+   "domain_number": 2,
+   "domain": "2. Governance & Organizational Maturity",
+   "title": "Information & Communication",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "3.1",
+   "domain_number": 3,
+   "domain": "3. Vendor Dependency",
+   "title": "Gestion de l’écosystème IA (partenaires et tiers) pour sécuriser l’exécution",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "4.1",
+   "domain_number": 4,
+   "domain": "4. Security",
+   "title": "Fiabilité",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "4.2",
+   "domain_number": 4,
+   "domain": "4. Security",
+   "title": "Sécurité et audit",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "4.3",
+   "domain_number": 4,
+   "domain": "4. Security",
+   "title": "Politiques, procédures et organisation",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "5.1",
+   "domain_number": 5,
+   "domain": "5. Data & AI technical Integrity",
+   "title": "Explicabilité",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "5.2",
+   "domain_number": 5,
+   "domain": "5. Data & AI technical Integrity",
+   "title": "Intégrité des données",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "5.3",
+   "domain_number": 5,
+   "domain": "5. Data & AI technical Integrity",
+   "title": "Catalogue de services IA, modularité et réutilisabilité des composants",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "5.4",
+   "domain_number": 5,
+   "domain": "5. Data & AI technical Integrity",
+   "title": "Knowledge Management",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "6.1",
+   "domain_number": 6,
+   "domain": "6. Financial Impact",
+   "title": "Maîtrise des coûts",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "7.1",
+   "domain_number": 7,
+   "domain": "7. Sustainability",
+   "title": "Responsabilité",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "7.2",
+   "domain_number": 7,
+   "domain": "7. Sustainability",
+   "title": "Equité",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "7.3",
+   "domain_number": 7,
+   "domain": "7. Sustainability",
+   "title": "Durabilité",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "8.1",
+   "domain_number": 8,
+   "domain": "8. AI Empowerment",
+   "title": "Manifeste et charte",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "8.2",
+   "domain_number": 8,
+   "domain": "8. AI Empowerment",
+   "title": "Cadre d’acculturation et d’adoption à l’échelle",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "9.1",
+   "domain_number": 9,
+   "domain": "9. Agents & outils",
+   "title": "Inventaire des agents et de leurs outils",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "9.2",
+   "domain_number": 9,
+   "domain": "9. Agents & outils",
+   "title": "Permissions et moindre privilège",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "9.3",
+   "domain_number": 9,
+   "domain": "9. Agents & outils",
+   "title": "Supervision humaine des actions à impact",
+   "measured_required_from_n3": true
+  },
+  {
+   "id": "9.4",
+   "domain_number": 9,
+   "domain": "9. Agents & outils",
+   "title": "Résistance à la manipulation (injection, empoisonnement d'outils)",
+   "measured_required_from_n3": true
+  },
+  {
+   "id": "9.5",
+   "domain_number": 9,
+   "domain": "9. Agents & outils",
+   "title": "Traçabilité des actions des agents",
+   "measured_required_from_n3": false
+  },
+  {
+   "id": "9.6",
+   "domain_number": 9,
+   "domain": "9. Agents & outils",
+   "title": "Maîtrise des outils et serveurs MCP tiers",
+   "measured_required_from_n3": true
+  },
+  {
+   "id": "9.7",
+   "domain_number": 9,
+   "domain": "9. Agents & outils",
+   "title": "Gestion des incidents liés aux agents",
+   "measured_required_from_n3": false
+  }
+ ]
+}

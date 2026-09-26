@@ -49,7 +49,13 @@ mais à anticiper avant de compter dessus pour de vraies données.
 
 Dans le workflow d'un utilisateur (`.github/workflows/*.yml`) :
 
+Le job doit autoriser le jeton OIDC (sinon la soumission est refusée) :
+
 ```yaml
+    permissions:
+      contents: read
+      id-token: write
+    steps:
       - name: Vérifier la conformité MCP
         uses: mcp-trust-score-org/mcp-trust-score@v1
         with:
@@ -57,6 +63,32 @@ Dans le workflow d'un utilisateur (`.github/workflows/*.yml`) :
           submit-to-leaderboard: 'true'
           leaderboard-api-url: 'https://ton-url-render.onrender.com'
 ```
+
+## 🔒 Contrôles d'accès (variables d'environnement)
+
+Tout est fermé par défaut : sans ces variables, les routes concernées
+répondent 503 au lieu d'accepter n'importe qui.
+
+| Variable | Rôle |
+|---|---|
+| `AUDITOR_TOKENS` | `alice:<jeton>,bob:<jeton>` — seuls ces auditeurs peuvent soumettre un audit (`/submit-audit`). Jetons de 24 caractères minimum, ex. `python -c "import secrets; print(secrets.token_urlsafe(32))"`. Le nom de l'auditeur est enregistré avec l'audit. |
+| `ADMIN_TOKEN` | protège `/badge/anchor`, `/framework-check`, `/test-email` (en-tête `Authorization: Bearer <jeton>`). 24 caractères minimum. |
+| `AXIOM_METHODOLOGY_FILE` | chemin de la grille AXIOM confidentielle (Render → Secret Files, ex. `/etc/secrets/axiom_v1_1.json`). Sans elle, l'audit est désactivé. |
+| `OIDC_AUDIENCE` | audience attendue dans le jeton OIDC GitHub (défaut `mcp-trust-score`). |
+
+`/submit` vérifie la signature du jeton OIDC avec les clés publiques de
+GitHub (`token.actions.githubusercontent.com`) : le serveur doit pouvoir
+joindre cette adresse.
+
+Au premier démarrage, la base est migrée automatiquement : colonnes de
+traçabilité ajoutées, anciennes soumissions (non attestées) et anciens
+audits (sans auditeur) conservés en base mais retirés de l'affichage
+public, et chaque ancien rapport d'audit reçoit un nouveau lien non
+devinable (colonne `report_token`) : les anciens liens `/audit-report/<numéro>`
+ne marchent plus, il faut renvoyer le nouveau lien aux entreprises concernées.
+
+Pour un cron (ex. vérification des référentiels) :
+`curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" https://…/framework-check`
 
 ## ⚠️ Point de vigilance technique : format des timestamps
 

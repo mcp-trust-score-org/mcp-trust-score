@@ -109,7 +109,9 @@ def get_db(sqlite_path: str = "leaderboard.db"):
 
 def now_expr() -> str:
     """Expression SQL pour 'maintenant', différente selon le backend."""
-    return "NOW()" if USE_POSTGRES else "datetime('now')"
+    # Parenthèses obligatoires en SQLite pour une expression dans DEFAULT
+    # (sans elles, la création des tables échoue en local).
+    return "NOW()" if USE_POSTGRES else "(datetime('now'))"
 
 
 def autoincrement_pk() -> str:

@@ -9,6 +9,9 @@ on:
 jobs:
   mcp-trust-score:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # jeton OIDC exigé par le classement pour attester le dépôt
     steps:
       - uses: actions/checkout@v4
 
